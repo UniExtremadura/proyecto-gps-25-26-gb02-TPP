@@ -136,15 +136,183 @@ def add_to_cart(body=None):
             dbDesconectar(db_conexion)
 
 
-def get_cart_products():  # noqa: E501
-    """Get the products from a user&#x27;s cart.
-
-    Get the products from a user&#x27;s cart. # noqa: E501
-
-
-    :rtype: List[Product]
+def get_cart_products():
     """
-    return 'do some magic!'
+    Obtiene todos los productos del carrito del usuario autenticado.
+    
+    Consulta las tres tablas de carrito (canciones, álbumes y merch) y obtiene
+    la información detallada de cada producto desde el microservicio TyA.
+    Construye objetos Product completos con toda la información necesaria para
+    mostrar en el frontend.
+    
+    Flujo de operación:
+        1. Valida el token del usuario
+        2. Consulta IDs de productos en las tablas de carrito
+        3. Para cada ID, realiza petición HTTP al microservicio TyA
+        4. Mapea la respuesta a objetos Product del modelo
+        5. Retorna lista de productos con información completa
+    
+    Integración con TyA:
+        - GET /song/{id}: Información de canciones
+        - GET /album/{id}: Información de álbumes
+        - GET /merch/{id}: Información de merchandising
+    
+    Manejo de errores:
+        - Errores de peticiones HTTP a TyA se capturan individualmente
+        - Productos que fallan se omiten de la respuesta (no bloquean el resto)
+        - Errores se registran en consola con print()
+    
+    Returns:
+        Tuple[List[Dict]|Error, int]: Tupla con respuesta y código HTTP:
+            - ([{product1}, {product2}, ...], 200): Lista de productos (puede estar vacía)
+            - (Error, 401): Token no encontrado
+            - (Error, 403): Usuario no autorizado
+            - (Error, 500): Error interno del servidor o BD
+    
+    Note:
+        La función es resiliente: si falla la obtención de algún producto
+        individual, continúa con los demás en lugar de fallar completamente.
+        
+    Performance:
+        Realiza múltiples peticiones HTTP síncronas. Para carritos grandes,
+        considerar implementación con peticiones asíncronas o batch.
+    """
+    print("[DEBUG] get_cart_products: Inicio de la función")
+    db_conexion = None
+    try:
+        # Obtener user_id del contexto (ya validado por check_oversound_auth)
+        print("[DEBUG] get_cart_products: Obteniendo user_id del contexto")
+        user_info = connexion.context.get('token_info')
+        user_id = user_info.get('userId') or user_info.get('id')
+        print(f"[DEBUG] get_cart_products: user_id obtenido = {user_id}")
+
+        print("[DEBUG] get_cart_products: Conectando a la base de datos")
+        db_conexion = dbConectar()
+        cursor = db_conexion.cursor()
+        print("[DEBUG] get_cart_products: Conexión establecida")
+
+        canciones = []
+        albumes = []
+        merchs = []
+        productos = []
+        
+        # Canciones
+        print("[DEBUG] get_cart_products: Consultando canciones en el carrito")
+        cursor.execute("""
+            SELECT c.idCancion
+            FROM CancionesCarrito c
+            WHERE c.idUsuario = %s
+        """, (user_id,))
+        for row in cursor.fetchall():
+            canciones.append(row[0])
+        print(f"[DEBUG] get_cart_products: {len(canciones)} canciones encontradas: {canciones}")
+            
+        # Álbumes
+        print("[DEBUG] get_cart_products: Consultando álbumes en el carrito")
+        cursor.execute("""
+            SELECT a.idAlbum
+            FROM AlbumesCarrito a
+            WHERE a.idUsuario = %s
+        """, (user_id,))
+        for row in cursor.fetchall():
+            albumes.append(row[0])
+        print(f"[DEBUG] get_cart_products: {len(albumes)} álbumes encontrados: {albumes}")
+
+        # Merch
+        print("[DEBUG] get_cart_products: Consultando merch en el carrito")
+        cursor.execute("""
+            SELECT m.idMerch, m.unidades
+            FROM MerchCarrito m
+            WHERE m.idUsuario = %s
+        """, (user_id,))
+        for row in cursor.fetchall():
+            merchs.append((row[0], row[1]))
+        print(f"[DEBUG] get_cart_products: {len(merchs)} items de merch encontrados: {merchs}")
+
+        # Resolvemos IDs de canciones, albumes y merch usando el microservicio TyA.
+        print(f"[DEBUG] get_cart_products: Resolviendo información de productos desde TyA ({TYA_SERVICE_URL})")
+        for cancion_id in canciones:
+            try:
+                print(f"[DEBUG] get_cart_products: Obteniendo canción {cancion_id} desde TyA")
+                response = requests.get(f"{TYA_SERVICE_URL}/song/{cancion_id}", timeout=3)
+                print(f"[DEBUG] get_cart_products: Respuesta de TyA para canción {cancion_id}: status={response.status_code}")
+                if response.status_code == 200:
+                    producto_data = response.json()
+                    producto_schema = Product()
+                    producto_schema.song_id = producto_data.get("songId")
+                    producto_schema.name = producto_data.get("title")
+                    producto_schema.description = producto_data.get("description")
+                    producto_schema.price = producto_data.get("price")
+                    producto_schema.artist = producto_data.get("artistId", 0)
+                    producto_schema.colaborators = producto_data.get("collaborators", [])
+                    producto_schema.genre = producto_data.get("genres", [0])[0] if producto_data.get("genres") else 0
+                    producto_schema.duration = producto_data.get("duration", 0)
+                    producto_schema.cover = producto_data.get("cover")
+                    producto_schema.release_date = producto_data.get("releaseDate")
+                    producto_schema.album_id = producto_data.get("albumId")
+                    productos.append(producto_schema)
+                    print(f"[DEBUG] get_cart_products: Canción {cancion_id} añadida a productos")
+            except Exception as e:
+                print(f"[DEBUG] get_cart_products: ERROR al obtener canción {cancion_id}: {type(e).__name__}: {e}")
+
+        for album_id in albumes:
+            try:
+                print(f"[DEBUG] get_cart_products: Obteniendo álbum {album_id} desde TyA")
+                response = requests.get(f"{TYA_SERVICE_URL}/album/{album_id}", timeout=3)
+                print(f"[DEBUG] get_cart_products: Respuesta de TyA para álbum {album_id}: status={response.status_code}")
+                if response.status_code == 200:
+                    producto_data = response.json()
+                    producto_schema = Product()
+                    producto_schema.album_id = producto_data.get("albumId")
+                    producto_schema.name = producto_data.get("title")
+                    producto_schema.description = producto_data.get("description")
+                    producto_schema.price = producto_data.get("price")
+                    producto_schema.artist = producto_data.get("artistId", 0)
+                    producto_schema.colaborators = producto_data.get("collaborators", [])
+                    producto_schema.genre = producto_data.get("genres", [0])[0] if producto_data.get("genres") else 0
+                    producto_schema.song_list = producto_data.get("songs", [])
+                    producto_schema.cover = producto_data.get("cover")
+                    producto_schema.release_date = producto_data.get("releaseDate")
+                    productos.append(producto_schema)
+                    print(f"[DEBUG] get_cart_products: Álbum {album_id} añadido a productos")
+            except Exception as e:
+                print(f"[DEBUG] get_cart_products: ERROR al obtener álbum {album_id}: {type(e).__name__}: {e}")
+
+        for merch_tuple in merchs:
+            merch_id = merch_tuple[0]  # El primer elemento es el ID
+            try:
+                print(f"[DEBUG] get_cart_products: Obteniendo merch {merch_id} desde TyA")
+                response = requests.get(f"{TYA_SERVICE_URL}/merch/{merch_id}", timeout=3)
+                print(f"[DEBUG] get_cart_products: Respuesta de TyA para merch {merch_id}: status={response.status_code}")
+                if response.status_code == 200:
+                    producto_data = response.json()
+                    producto_schema = Product()
+                    producto_schema.merch_id = producto_data.get("merchId")
+                    producto_schema.name = producto_data.get("title")
+                    producto_schema.description = producto_data.get("description")
+                    producto_schema.price = producto_data.get("price")
+                    producto_schema.artist = producto_data.get("artistId", 0)
+                    producto_schema.colaborators = producto_data.get("collaborators", [])
+                    producto_schema.genre = None  # Merch no tiene género en TyA
+                    producto_schema.cover = producto_data.get("cover")
+                    producto_schema.release_date = producto_data.get("releaseDate")
+                    productos.append(producto_schema)
+                    print(f"[DEBUG] get_cart_products: Merch {merch_id} añadido a productos")
+            except Exception as e:
+                print(f"[DEBUG] get_cart_products: ERROR al obtener merch {merch_id}: {type(e).__name__}: {e}")
+
+        cursor.close()
+        print(f"[DEBUG] get_cart_products: Total de productos a retornar: {len(productos)}")
+        return [p.to_dict() for p in productos], 200
+
+    except Exception as e:
+        print(f"[DEBUG] get_cart_products: EXCEPCIÓN - {type(e).__name__}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return Error(code="500", message=str(e)).to_dict(), 500
+    finally:
+        if db_conexion:
+            dbDesconectar(db_conexion)
 
 
 def remove_from_cart(product_id, type=None):  # noqa: E501
