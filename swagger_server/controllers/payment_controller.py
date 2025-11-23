@@ -168,17 +168,92 @@ def add_payment_method(body=None):
             dbDesconectar(db_conexion)
 
 
-def delete_payment_method(payment_method_id):  # noqa: E501
-    """Delete a payment method by ID.
 
-    Delete a payment method by ID. # noqa: E501
-
-    :param payment_method_id: 
-    :type payment_method_id: int
-
-    :rtype: None
+def delete_payment_method(payment_method_id):
     """
-    return 'do some magic!'
+    Elimina un método de pago por su ID.
+    
+    Elimina el método de pago de la base de datos incluyendo sus asociaciones
+    con usuarios. La eliminación es permanente y no puede deshacerse.
+    
+    Operaciones en BD:
+        1. Elimina de tabla MetodosPago (eliminación principal)
+        2. Elimina de tabla UsuariosMetodosPago (limpieza de relaciones)
+    
+    Validaciones:
+        - Usuario debe estar autenticado (token válido)
+        - Método de pago debe existir (verifica rowcount)
+    
+    Args:
+        payment_method_id (str): ID del método de pago a eliminar.
+    
+    Returns:
+        Tuple[Dict|Error, int]: Tupla con respuesta y código HTTP:
+            - ({"message": "..."}, 200): Método eliminado exitosamente
+            - (Error, 401): Token no encontrado
+            - (Error, 403): Usuario no autorizado
+            - (Error, 404): Método de pago no encontrado
+            - (Error, 500): Error interno del servidor
+    
+    Security:
+        Solo permite eliminar métodos de pago que pertenecen al usuario autenticado.
+        Valida la propiedad del método antes de la eliminación.
+    
+    Note:
+        La validación de propiedad previene que usuarios eliminen métodos de pago
+        de otros usuarios, mejorando la seguridad del sistema.
+    """
+    print("[DEBUG] delete_payment_method: Inicio de la función")
+    db_conexion = None
+    try:
+        # Obtener user_id del contexto (ya validado por check_oversound_auth)
+        print("[DEBUG] delete_payment_method: Obteniendo user_id del contexto")
+        user_info = connexion.context.get('token_info')
+        user_id = user_info.get('userId') or user_info.get('id')
+        print(f"[DEBUG] delete_payment_method: user_id obtenido = {user_id}, payment_method_id = {payment_method_id}")
+
+        print("[DEBUG] delete_payment_method: Conectando a la base de datos")
+        db_conexion = dbConectar()
+        cursor = db_conexion.cursor()
+        print("[DEBUG] delete_payment_method: Conexión establecida")
+
+        # Verificar que el método de pago pertenece al usuario autenticado
+        print(f"[DEBUG] delete_payment_method: Verificando que método {payment_method_id} pertenece a usuario {user_id}")
+        cursor.execute(
+            "SELECT 1 FROM UsuariosMetodosPago WHERE idMetodoPago = %s AND idUsuario = %s",
+            (payment_method_id, user_id)
+        )
+        if not cursor.fetchone():
+            print(f"[DEBUG] delete_payment_method: ERROR - Método de pago no encontrado o no pertenece al usuario")
+            return Error(code="404", message="Método de pago no encontrado o no pertenece al usuario").to_dict(), 404
+
+        # Eliminar la asociación usuario-método
+        print(f"[DEBUG] delete_payment_method: Eliminando asociación usuario-método")
+        cursor.execute("DELETE FROM UsuariosMetodosPago WHERE idMetodoPago = %s AND idUsuario = %s",
+                      (payment_method_id, user_id))
+        
+        # Eliminar el método de pago
+        print(f"[DEBUG] delete_payment_method: Eliminando método de pago")
+        cursor.execute("DELETE FROM MetodosPago WHERE idMetodoPago = %s", (payment_method_id,))
+        
+        print("[DEBUG] delete_payment_method: Haciendo commit de la transacción")
+        db_conexion.commit()
+        cursor.close()
+        print("[DEBUG] delete_payment_method: Método de pago eliminado exitosamente")
+        return {"message": "Método de pago eliminado correctamente"}, 200
+
+    except Exception as e:
+        if db_conexion:
+            db_conexion.rollback()
+        print(f"[DEBUG] delete_payment_method: EXCEPCIÓN - {type(e).__name__}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return Error(code="500", message=str(e)).to_dict(), 500
+
+    finally:
+        if db_conexion:
+            dbDesconectar(db_conexion)
+
 
 
 
